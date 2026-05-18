@@ -19,32 +19,48 @@ jobs:
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: write
+      pull-requests: write
+      issues: write
       id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      actions: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Project Setup
+        run: |
+          npm install
+          npx prisma generate
+          npx prisma migrate deploy
+          npm run dev:daemon
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3000 > /dev/null; then
+              echo "Dev server ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-
-          # This is an optional setting that allows Claude to read CI results on PRs
           additional_permissions: |
             actions: read
-
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
-          # prompt: 'Update the pull request description to include a summary of changes.'
-
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr *)'
-
+          claude_args: |
+            --system-prompt "The project is already set up with all dependencies installed. The server is already running at localhost:3000. Logs from it are being written to logs.txt. If needed, you can query the db with the 'sqlite3' cli against prisma/dev.db. If needed, use the mcp__playwright set of tools to launch a browser and interact with the app."
+            --mcp-config '{"mcpServers":{"playwright":{"command":"npx","args":["-y","@playwright/mcp@latest","--allowed-origins","localhost:3000;cdn.tailwindcss.com;esm.sh"]}}}'
+            --allowedTools "Bash(npm:*),Bash(npx:*),Bash(sqlite3:*),Edit,Write,Read,Glob,Grep,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_click,mcp__playwright__browser_type,mcp__playwright__browser_fill_form,mcp__playwright__browser_select_option,mcp__playwright__browser_hover,mcp__playwright__browser_press_key,mcp__playwright__browser_wait_for,mcp__playwright__browser_tabs,mcp__playwright__browser_close,mcp__playwright__browser_take_screenshot,mcp__playwright__browser_console_messages,mcp__playwright__browser_navigate_back,mcp__playwright__browser_drag,mcp__playwright__browser_resize,mcp__playwright__browser_handle_dialog,mcp__playwright__browser_file_upload"
